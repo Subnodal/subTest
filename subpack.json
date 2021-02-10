@@ -1,0 +1,6 @@
+{
+    "identifier": "com.subnodal.subtest",
+    "modules": [
+        "subtest.js"
+    ]
+}
