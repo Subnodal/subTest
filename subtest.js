@@ -11,9 +11,26 @@ namespace("com.subnodal.subtest", function(exports) {
     var updateCallbacks = [];
     var consoleElement = null;
 
+    exports.TestError = class extends Error {
+        constructor(message) {
+            super(message);
+
+            this.name = "TestError";
+        }
+    };
+
+    exports.PromiseError = class extends Error {
+        constructor(message) {
+            super(message);
+
+            this.name = "PromiseError";
+        }
+    };
+
     exports.PassCondition = class {
         constructor() {
             this.passed = null;
+            this.failReason = null;
         }
 
         run(testableCode) {
@@ -29,6 +46,7 @@ namespace("com.subnodal.subtest", function(exports) {
                 this.passed = true;
             } catch (e) {
                 this.passed = false;
+                this.failReason = e;
             }
         }
     };
@@ -43,48 +61,80 @@ namespace("com.subnodal.subtest", function(exports) {
         run(testableCode) {
             try {
                 this.passed = testableCode() == this.expected;
+                this.failReason = testableCode() != this.expected ? new exports.TestError("Unmet equality") : null;
             } catch (e) {
                 this.passed = false;
+                this.failReason = e;
             }
         }
     };
 
     exports.PromiseResolutionPassCondition = class extends exports.PassCondition {
         run(testableCode) {
+            var thisScope = this;
+
             try {
-                testableCode().then(() => this.passed = true).catch(() => this.passed = false);
+                testableCode().then(() => this.passed = true).catch(function(error) {
+                    thisScope.passed = false;
+                    thisScope.failReason = new exports.PromiseError(error);
+                });
             } catch (e) {
                 this.passed = false;
+                this.failReason = e;
             }
         }
     };
 
     exports.PromiseResolutionEqualityPassCondition = class extends exports.EqualityPassCondition {
         run(testableCode) {
+            var thisScope = this;
+
             try {
-                testableCode().then((i) => this.passed = i == this.expected).catch(() => this.passed = false);
+                testableCode().then(function(i) {
+                    thisScope.passed = i == thisScope.expected;
+                    thisScope.failReason = i != thisScope.expected ? new exports.TestError("Unmet equality") : null;
+                }).catch(function(error) {
+                    thisScope.passed = false;
+                    thisScope.failReason = new exports.PromiseError(error);
+                });
             } catch (e) {
                 this.passed = false;
+                this.failReason = e;
             }
         }
     };
 
     exports.PromiseRejectionPassCondition = class extends exports.PassCondition {
         run(testableCode) {
+            var thisScope = this;
+
             try {
-                testableCode().then(() => this.passed = true).catch(() => this.passed = false);
+                testableCode().then(function() {
+                    thisScope.passed = false;
+                    thisScope.failReason = new exports.TestError("No promise rejection was made");
+                }).catch(() => this.passed = true);
             } catch (e) {
                 this.passed = false;
+                this.failReason = e;
             }
         }
     };
 
     exports.PromiseRejectionEqualityPassCondition = class extends exports.EqualityPassCondition {
         run(testableCode) {
+            var thisScope = this;
+
             try {
-                testableCode().then(() => this.passed = false).catch((i) => this.passed = i == this.expected);
+                testableCode().then(function() {
+                    thisScope.passed = false;
+                    thisScope.failReason = new exports.TestError("No promise rejection was made");
+                }).catch(function() {
+                    thisScope.passed = i == thisScope.expected;
+                    thisScope.failReason = i != thisScope.expected ? new exports.TestError("Unmet equality") : null;
+                });
             } catch (e) {
                 this.passed = false;
+                this.failReason = e;
             }
         }
     };
@@ -95,6 +145,7 @@ namespace("com.subnodal.subtest", function(exports) {
                 testableCode();
 
                 this.passed = false;
+                this.failReason = new exports.TestError("Code ran without throwing an error");
             } catch (e) {
                 if (this.expected == null) {
                     this.passed = true;
@@ -103,14 +154,50 @@ namespace("com.subnodal.subtest", function(exports) {
                 }
 
                 this.passed = e.name == this.expected.name && e.message == this.expected.message;
+
+                if (!this.passed) {
+                    this.failReason = e;
+                }
             }
+        }
+    };
+
+    exports.DeferredPassCondition = class extends exports.PassCondition {
+        constructor(subsequentPassCondition) {
+            super();
+
+            this.subsequentPassCondition = subsequentPassCondition;
+
+            this.waiting = true;
+        }
+
+        run(testableCode) {
+            var thisScope = this;
+
+            testableCode().then(function(i) {
+                thisScope.waiting = false;
+
+                thisScope.subsequentPassCondition.run(i);
+
+                var conditionCheckInterval = setInterval(function() {
+                    thisScope.passed = thisScope.subsequentPassCondition.passed;
+                    thisScope.failReason = thisScope.subsequentPassCondition.failReason;
+
+                    if (thisScope.passed != null) {
+                        clearInterval(conditionCheckInterval);
+                    }
+                });
+            }).catch(function(error) {
+                thisScope.passed = false;
+                thisScope.failReason = new exports.TestError(error);
+            });
         }
     };
 
     exports.Test = class {
         constructor(testableCode) {
             this.testableCode = testableCode;
-            this.passCondition = null;
+            this.passCondition = new exports.RunWithoutErrorCondition();
         }
 
         shouldRun() {
@@ -151,6 +238,31 @@ namespace("com.subnodal.subtest", function(exports) {
 
         shouldThrow(expected = null) {
             this.passCondition = new exports.ThrowPassCondition(expected);
+
+            return this;
+        }
+
+        after(test, mustPass = false) {
+            var oldTestableCode = this.testableCode.bind({});
+
+            var newTestableCode = function() {
+                return new Promise(function(resolve, reject) {
+                    var testCheckInverval = setInterval(function() {
+                        if (test.passCondition.passed != null) {
+                            clearInterval(testCheckInverval);
+
+                            if (test.passCondition.passed == true || !mustPass) {
+                                resolve(oldTestableCode);
+                            } else {
+                                reject("Test is dependent on another test's success");
+                            }
+                        }
+                    });
+                });
+            };
+
+            this.testableCode = newTestableCode;
+            this.passCondition = new exports.DeferredPassCondition(this.passCondition);
 
             return this;
         }
@@ -255,6 +367,31 @@ namespace("com.subnodal.subtest", function(exports) {
         exports.registerUpdateCallback(function(tests) {
             clearWebConsole();
 
+            var passedTests = 0;
+            var failedTests = 0;
+            var runningTests = 0;
+
+            for (var test in tests) {
+                switch (tests[test].passCondition.passed) {
+                    case true:
+                        passedTests++;
+                        break;
+
+                    case false:
+                        failedTests++;
+                        break;
+
+                    default:
+                        runningTests++;
+                        break;
+                }
+            }
+
+            addToWebConsole(
+                `Tests passed: ${passedTests} of ${passedTests + failedTests + runningTests} (${failedTests} failed, ${runningTests} running) ` +
+                `${Math.round((passedTests / (passedTests + failedTests + runningTests)) * 100)}%`,
+            "info");
+
             for (var test in tests) {
                 var entryType = "running";
                 var entryMessagePrefix = "⏳ WAIT: ";
@@ -265,9 +402,16 @@ namespace("com.subnodal.subtest", function(exports) {
                 } else if (tests[test].passCondition.passed == false) {
                     entryType = "fail";
                     entryMessagePrefix = "❌ FAIL: ";
+                } else if (tests[test].passCondition instanceof exports.DeferredPassCondition && tests[test].passCondition.waiting) {
+                    entryType = "running";
+                    entryMessagePrefix = "⏳ WAIT (deferred): ";
                 }
 
-                addToWebConsole(entryMessagePrefix + test, entryType);
+                if (tests[test].passCondition.passed != false) {
+                    addToWebConsole(entryMessagePrefix + test, entryType);
+                } else {
+                    addToWebConsole(entryMessagePrefix + test + ` (${tests[test].passCondition.failReason == null ? "Unknown error" : tests[test].passCondition.failReason.toString()})`, entryType);
+                }
             }
         });
 
