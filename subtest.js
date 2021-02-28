@@ -362,7 +362,7 @@ namespace("com.subnodal.subtest", function(exports) {
             @returns <Test> Self-return for call chaining
         */
         shouldReject() {
-            this.passCondition = new exports.PromiseResolutionPassCondition();
+            this.passCondition = new exports.PromiseRejectionPassCondition();
 
             return this;
         }
@@ -376,7 +376,7 @@ namespace("com.subnodal.subtest", function(exports) {
             @returns <Test> Self-return for call chaining
         */
         shouldRejectTo(expected = true) {
-            this.passCondition = new exports.PromiseResolutionEqualityPassCondition(expected);
+            this.passCondition = new exports.PromiseRejectionEqualityPassCondition(expected);
 
             return this;
         }
