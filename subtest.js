@@ -432,7 +432,7 @@ namespace("com.subnodal.subtest", function(exports) {
         Listen to any test updates, such as when a test pass condition settles
         from running to pass. Is always run when at least one test is running,
         even when no test pass conditions have changed.
-        @param callback <Function> Callback unction to run when test updates are emitted
+        @param callback <Function> Callback function to run when test updates are emitted
     */
     exports.registerUpdateCallback = function(callback) {
         updateCallbacks.push(callback);
